@@ -1,0 +1,52 @@
+# Costruire un'immagine dal Dockerfile nella cartella corrente
+docker build -t nome-immagine .
+
+# Vedere le immagini disponibili
+docker images
+
+# Eliminare un'immagine
+docker rmi nome-immagine
+
+# Avviare un container in background
+docker run -d --name nome-container nome-immagine
+
+# Avviare un container con shell interattiva
+docker run -it --name nome-container nome-immagine bash
+
+# Vedere i container in esecuzione
+docker ps
+
+# Vedere TUTTI i container (anche fermati)
+docker ps -a
+
+# Fermare un container
+docker stop nome-container
+
+# Riavviare un container
+docker restart nome-container
+
+# Avviare un container fermo
+docker start nome-container
+
+# Eliminare un container
+docker rm nome-container
+
+# Vedere i log di un container
+docker logs nome-container
+docker logs -f nome-container    # segue i log in tempo reale
+
+# Eseguire un comando dentro un container in esecuzione
+docker exec -it nome-container bash
+
+# Pulizia: rimuove container/immagini/volumi non usati
+docker system prune          # chiede conferma
+docker system prune -a       # rimuove anche immagini "dangling" e non usate
+
+# Volumi
+docker volume ls             # elenca i volumi
+docker volume rm nome-volume # elimina un volume
+
+# Network
+docker network ls            # elenca le reti
+docker network inspect nome-network
+docker network rm nome-network
