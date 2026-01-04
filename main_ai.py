@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import requests
@@ -102,6 +103,27 @@ def is_stalled(record: dict) -> bool:
     """
     status = str(record.get("status", "")).lower()
     error_message = str(record.get("errorMessage", "") or "").lower()
+
+    kw_stalled = "stalled"
+    kw_no_conn = "下载因无连接而停止"
+    kw_metadata = "正在下载元数据"
+
+    if status == "warning":
+        if kw_stalled in error_message or kw_no_conn in error_message:
+            return True
+
+    if status == "queued" and kw_metadata in error_message:
+        added_str = record.get("added")
+        if added_str:
+            try:
+                added_time = datetime.fromisoformat(added_str.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+
+                if (now - added_time).total_seconds() > 1800:
+                    return True
+            except (ValueError, TypeError):
+                pass
+
     return status == "warning" and "stalled" in error_message
 
 
@@ -127,7 +149,7 @@ def count_records(api_url: str, api_key: str) -> Optional[int]:
     return int(queue.data.get("totalRecords", 0))
 
 
-def fetch_stalled_ids(api_url: str, api_key: str, total_records: int) -> Optional[List[int]]:
+def fetch_stalled_items(api_url: str, api_key: str, total_records: int) -> Optional[List[dict]]:
     """
     Return the list of queue IDs currently stalled.
 
@@ -150,16 +172,16 @@ def fetch_stalled_ids(api_url: str, api_key: str, total_records: int) -> Optiona
         logger.info("Queue from %s is empty or malformed", api_url)
         return []
 
-    stalled_ids: List[int] = []
+    stalled_items: List[dict] = []
     for item in data["records"]:
         try:
             if is_stalled(item):
-                stalled_ids.append(item["id"])
+                stalled_items.append(item)
         except Exception as e:
             # A single malformed record should not break the entire loop
             logger.warning("Error while checking record %s: %s", item, e)
 
-    return stalled_ids
+    return stalled_items
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +193,7 @@ def process_instance(
     name: str,
     api_url: str,
     api_key: str,
-    stalled_since: Dict[int, int],
+    stalled_since: Dict[int, dict],
 ) -> None:
     """
     Process one instance (Radarr or Sonarr).
@@ -198,33 +220,40 @@ def process_instance(
 
     logger.info("[%s] Queue has %d items", name, total)
 
-    stalled_ids = fetch_stalled_ids(api_url, api_key, total)
-    if stalled_ids is None:
+    stalled_items = fetch_stalled_items(api_url, api_key, total)
+    if stalled_items is None:
         # On temporary error, keep the cache so we don't lose timers
         return
 
     now = elapsed_seconds()
-    new_cache: Dict[int, int] = {}
+    new_cache: Dict[int, dict] = {
+        item["id"]: {**item}
+        for item in stalled_items
+    }
 
+    stalled_ids = [x['id'] for x in stalled_items]
     # Update or create timers for currently stalled IDs
     for download_id in stalled_ids:
-        first_seen = stalled_since.get(download_id, now)
-        if download_id not in stalled_since:
+        first_seen = stalled_since.get(download_id, {**new_cache.get(download_id, {}), "last_seen": now})
+        if download_id not in stalled_since.keys():
             logger.info("[%s] Marking %s as stalled (timer starts at %ss)", name, download_id, now)
         else:
             logger.debug(
                 "[%s] %s still stalled: elapsed=%ss / timeout=%ss",
                 name,
                 download_id,
-                now - first_seen,
+                now - first_seen.get("last_seen"),
                 STALL_TIMEOUT_SECONDS,
             )
         new_cache[download_id] = first_seen
 
     # Remove and blocklist items that exceeded the timeout
     for download_id, first_seen in list(new_cache.items()):
-        stalled_for = now - first_seen
-        if stalled_for >= STALL_TIMEOUT_SECONDS:
+        stalled_for = now - first_seen.get('last_seen')
+        download_in_progress = first_seen.get('sizeleft') - stalled_since.get(download_id, {}).get('sizeleft', 0)
+        still_no_progress = download_in_progress == 0
+
+        if stalled_for >= STALL_TIMEOUT_SECONDS and still_no_progress:
             logger.warning(
                 "[%s] Download %s stalled for %ss (>= %ss), removing and blacklisting",
                 name,
@@ -280,8 +309,8 @@ def main() -> None:
     )
 
     # Per-instance caches for stalled timers
-    radarr_stalled: Dict[int, int] = {}
-    sonarr_stalled: Dict[int, int] = {}
+    radarr_stalled: Dict[int, dict] = {}
+    sonarr_stalled: Dict[int, dict] = {}
 
     while True:
         try:
