@@ -18,6 +18,9 @@ CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", "600"))
 # Time after which a stalled download is considered dead (default: 1 hour)
 STALL_TIMEOUT_SECONDS = int(os.environ.get("STALL_TIMEOUT_SECONDS", "3600"))
 
+BLOCK_TIMEOUT_SECONDS = int(os.environ.get("BLOCK_TIMEOUT_SECONDS", "86400"))
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -249,11 +252,13 @@ def process_instance(
 
     # Remove and blocklist items that exceeded the timeout
     for download_id, first_seen in list(new_cache.items()):
+        last_item = stalled_since.get(download_id, {})
         stalled_for = now - first_seen.get('last_seen')
-        download_in_progress = first_seen.get('sizeleft') - stalled_since.get(download_id, {}).get('sizeleft', 0)
-        still_no_progress = download_in_progress == 0
+        download_in_progress = first_seen.get('sizeleft') - last_item.get('sizeleft', 0)
+        still_no_progress = download_in_progress == 0 and stalled_for >= BLOCK_TIMEOUT_SECONDS
+        stalled = first_seen.get('size') == 0 and stalled_for >= STALL_TIMEOUT_SECONDS
 
-        if stalled_for >= STALL_TIMEOUT_SECONDS and still_no_progress:
+        if stalled or still_no_progress:
             logger.warning(
                 "[%s] Download %s stalled for %ss (>= %ss), removing and blacklisting",
                 name,
